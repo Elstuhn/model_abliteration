@@ -10,9 +10,9 @@ from transformer_lens.hook_points import HookPoint
 import einops
 
 from collections import defaultdict
-from model import tokenize_instructions
 import gc
-from misc import get_orthogonalized_matrix
+
+from utils import *
 
 def get_model(model_path:str):
     """   

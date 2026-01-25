@@ -6,7 +6,7 @@ import einops
 from jaxtyping import Float, Int
 from torch import Tensor
 
-from model import get_generations, direction_ablation_hook
+from utils import *
 
 def get_act_idx(cache_dict, act_name, layer):
     key = (act_name, layer)
