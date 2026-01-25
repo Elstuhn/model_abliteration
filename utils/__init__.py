@@ -1,6 +1,6 @@
 from dataset import load_dataset, get_harmful_instructions, get_harmless_instructions
-from model import tokenize_instructions, get_model, _generate_with_hooks, get_generations, direction_ablation_hook
-from train import train_one_pass
+from model import tokenize_instructions, get_model, _generate_with_hooks, get_generations, direction_ablation_hook, get_activations, change_weight, save_model
+from misc import compute_refusal, evaluate_refusal_direction, get_orthogonalized_matrix
 
 __all__ = [
     'load_dataset',
@@ -8,8 +8,13 @@ __all__ = [
     'get_harmless_instructions',
     'tokenize_instructions',
     'get_model',
-    'train_one_pass',
+    'get_activations',
     '_generate_with_hooks',
     'get_generations',
-    'direction_ablation_hook'
+    'direction_ablation_hook',
+    'compute_refusal',
+    'evaluate_refusal_direction',
+    'get_orthogonalized_matrix',
+    'change_weight',
+    'save_model'
 ]

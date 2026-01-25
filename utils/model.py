@@ -1,5 +1,5 @@
 from transformer_lens import HookedTransformer, utils
-from transformers import AutoTokenizer, BitsAndBytesConfig
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 import torch
 
 from typing import List
@@ -8,6 +8,11 @@ from torch import Tensor
 from tqdm import tqdm
 from transformer_lens.hook_points import HookPoint
 import einops
+
+from collections import defaultdict
+from model import tokenize_instructions
+import gc
+from misc import get_orthogonalized_matrix
 
 def get_model(model_path:str):
     """   
@@ -114,4 +119,127 @@ def direction_ablation_hook(
         * direction
     ) # proj=(⟨a,d⟩)d # refusal component of activation (subspace set to refusal direction)
     return activation - proj # vector orthogonal to refusal subspace (no refusal component)
+
+
+def get_activations(model, tokenizer, harmful_data, harmless_data, batch_size:int = 32):
+    """    
+    Get activations for harmful and harmless instructions.
+    Args:
+        model: The model to be trained.
+        tokenizer: The tokenizer used for processing instructions.
+        harmful_data: List of harmful instructions.
+        harmless_data: List of harmless instructions.
+        batch_size: The size of each training batch.
+    """
+    n_inst_train = min(256, len(harmful_data), len(harmless_data))
+    # harmful_data => harmful_inst_train
+    harmful = defaultdict(list)
+    harmless = defaultdict(list)
+    
+    num_batches = (n_inst_train + batch_size - 1) // batch_size
+
+    harmful_tokens = tokenize_instructions(
+        tokenizer,
+        instructions=harmful_data[:n_inst_train]
+    )
+    harmless_tokens = tokenize_instructions(
+        tokenizer,
+        instructions=harmless_data[:n_inst_train]
+    )
+
+    for i in tqdm(range(num_batches), desc="Training Pass"):
+        start_idx = i * batch_size
+        end_idx = min(start_idx + batch_size, n_inst_train)
+        
+        harmful_batch = harmful_tokens[start_idx:end_idx]
+        harmless_batch = harmless_tokens[start_idx:end_idx]
+        
+        harmful_logits, harmful_cache = model.run_with_cache(
+            harmful_batch,
+            names_filter=lambda hook_name: 'resid' in hook_name,
+            device='cpu',
+            reset_hooks_end=True
+        )
+
+        harmless_logits, harmless_cache = model.run_with_cache(
+            harmless_batch,
+            names_filter=lambda hook_name: 'resid' in hook_name,
+            device='cpu',
+            reset_hooks_end=True
+        )
+
+        for key in harmful_cache:
+            harmful[key].append(harmful_cache[key])
+            harmless[key].append(harmless_cache[key])
+
+        del harmful_logits, harmless_logits, harmful_cache, harmless_cache  
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        harmful = {k: torch.cat(v) for k, v in harmful.items()}
+        harmless = {k: torch.cat(v) for k, v in harmless.items()}
+        return harmful, harmless
+    
+    
+def change_weight(
+    model: HookedTransformer,
+    succeeded_layers: set,
+    activation_scored:list,
+    mode = "middle",
+):
+    """
+    Change model weights by taking the middle of succeeded layers
+    succeeded_layers: set of layer indices that succeeded
+    mode: "middle" takes the middle succeeded layer's weights
+    """
+    if mode == "middle":
+        candidate_layer = list(succeeded_layers)[len(succeeded_layers)//2]
+    
+    refusal_dir = activation_scored[candidate_layer]
+
+    if refusal_dir.device != model.W_E.device:
+        refusal_dir = refusal_dir.to(model.W_E.device)
+
+    model.W_E.data = get_orthogonalized_matrix(model.W_E, refusal_dir)
+
+    for block in tqdm(model.blocks):
+        if refusal_dir.device != block.attn.W_O.device:
+            refusal_dir = refusal_dir.to(block.attn.W_O.device)
+        block.attn.W_O.data = get_orthogonalized_matrix(block.attn.W_O, refusal_dir)
+        block.mlp.W_out.data = get_orthogonalized_matrix(block.mlp.W_out, refusal_dir)
+
+    return model
+
+def save_model(
+        original_model: str,
+        model: HookedTransformer,
+        save_name:str = "abliterated_model.pt", 
+        dtype: torch.dtype = torch.bfloat16
+    ):
+    hf_model = AutoModelForCausalLM.from_pretrained(
+        original_model,
+        torch_dtype=dtype,
+        device='cpu',
+    )
+    
+    lm_model = hf_model.model  
+    state_dict = model.state_dict()
+    lm_model.embed_tokens.weight = torch.nn.Parameter(state_dict["embed.W_E"].cpu())
+    
+    for l in range(model.cfg.n_layers):
+        lm_model.layers[l].self_attn.o_proj.weight = torch.nn.Parameter(
+            einops.rearrange(
+                state_dict[f"blocks.{l}.attn.W_O"], "n h m->m (n h)", n=model.cfg.n_heads
+            ).contiguous()
+        )
+        lm_model.layers[l].mlp.down_proj.weight = torch.nn.Parameter(
+            torch.transpose(state_dict[f"blocks.{l}.mlp.W_out"], 0, 1).contiguous()
+        )
+
+    torch.save(
+        hf_model.state_dict(),
+        save_name
+    )
+
+    del lm_model, hf_model
 
