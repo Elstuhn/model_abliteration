@@ -1,10 +1,10 @@
 # Decensoring of Models using Model Abliteration
 Used orthogonal decomposition to abliterate models to achieve a 56.7% decrease in censoring 
 
-60.83% (73/120) => 4.17% (5/120) censor rate
+92.5% (111/120) => 2.5% (3/120) censor rate
 
 # Dataset
-Dataset used was quite lenient thus original model had a censor rate of 60.83%
+Dataset used currently consists of 4 different categories. Fraud, hate_harass_violence, illegal and malware.
 
-# Next
-Uploading decensor framework soon
+# Next Plans
+Optimize gpu memory usage
